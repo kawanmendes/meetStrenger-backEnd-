@@ -1,0 +1,503 @@
+openapi: 3.0.3
+info:
+  title: MeetStranger API
+  version: 2.0.0
+  description: Backend Express, Socket.IO e PostgreSQL para chat P2P.
+servers:
+  - url: http://localhost:3000/api
+tags:
+  - name: auth
+  - name: matching
+  - name: chat
+  - name: health
+paths:
+  /:
+    get:
+      tags: [health]
+      summary: API metadata
+      responses:
+        '200':
+          description: API metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiMetadataResponse'
+  /health:
+    get:
+      tags: [health]
+      summary: Health check with PostgreSQL validation
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Register user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: User registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Login user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: User logged in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Logout user
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessageResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+  /auth/profile:
+    get:
+      tags: [auth]
+      summary: Get authenticated user profile
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+  /matching/join:
+    post:
+      tags: [matching]
+      summary: Validate category before using WebSocket find-match
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryRequest'
+      responses:
+        '200':
+          description: Category accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchingJoinResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+  /matching/leave:
+    delete:
+      tags: [matching]
+      summary: Leave all matching queues
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Left queue
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessageResponse'
+  /matching/stats:
+    get:
+      tags: [matching]
+      summary: Get queue stats
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Queue stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueStatsResponse'
+  /chat/rooms:
+    get:
+      tags: [chat]
+      summary: Get active rooms for current user
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Rooms
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomsResponse'
+  /chat/rooms/{roomId}/messages:
+    get:
+      tags: [chat]
+      summary: Get transient messages placeholder
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RoomId'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Empty transient message page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessagesResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [chat]
+      summary: Validate message payload before WebSocket send-message
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RoomId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageRequest'
+      responses:
+        '201':
+          description: Message accepted for WebSocket flow
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageAcceptedResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+  /chat/rooms/{roomId}/leave:
+    post:
+      tags: [chat]
+      summary: Leave room
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RoomId'
+      responses:
+        '200':
+          description: Left room
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessageResponse'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    RoomId:
+      name: roomId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    Category:
+      type: string
+      enum: [movies, gaming, music, study]
+    StandardResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          nullable: true
+        message:
+          type: string
+        error:
+          type: string
+    RegisterRequest:
+      type: object
+      required: [username, email, password]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 50
+          example: user123
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        password:
+          type: string
+          minLength: 6
+          example: secret123
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        is_online:
+          type: boolean
+    AuthResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            user:
+              $ref: '#/components/schemas/User'
+            token:
+              type: string
+    ProfileResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            user:
+              $ref: '#/components/schemas/User'
+    CategoryRequest:
+      type: object
+      required: [category]
+      properties:
+        category:
+          $ref: '#/components/schemas/Category'
+    MatchingJoinResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            category:
+              $ref: '#/components/schemas/Category'
+        message:
+          type: string
+          example: Use WebSocket event find-match for real-time matching
+    QueueStatsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            movies:
+              type: integer
+            gaming:
+              type: integer
+            music:
+              type: integer
+            study:
+              type: integer
+            activeRooms:
+              type: integer
+    Room:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        category:
+          $ref: '#/components/schemas/Category'
+        status:
+          type: string
+        partner:
+          type: object
+          properties:
+            username:
+              type: string
+        createdAt:
+          type: string
+          format: date-time
+    RoomsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            rooms:
+              type: array
+              items:
+                $ref: '#/components/schemas/Room'
+    MessageRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 500
+          example: Hello!
+    MessageAcceptedResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            roomId:
+              type: string
+            text:
+              type: string
+        message:
+          type: string
+    MessagesResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            messages:
+              type: array
+              items:
+                type: object
+            pagination:
+              type: object
+              properties:
+                page:
+                  type: integer
+                limit:
+                  type: integer
+                total:
+                  type: integer
+                hasMore:
+                  type: boolean
+        message:
+          type: string
+    HealthResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [healthy, unhealthy]
+            timestamp:
+              type: string
+              format: date-time
+            services:
+              type: object
+              properties:
+                database:
+                  type: string
+                websocket:
+                  type: string
+    ApiMetadataResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            version:
+              type: string
+            status:
+              type: string
+    SuccessMessageResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
