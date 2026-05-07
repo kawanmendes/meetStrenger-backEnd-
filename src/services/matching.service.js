@@ -10,77 +10,178 @@ const waitingQueues = CATEGORIES.reduce((queues, category) => {
 const activeRooms = new Map();
 
 class MatchingService {
+
   joinQueue(userId, socketId, category) {
+
+    // remove usuário de todas filas anteriores
     this.leaveAllQueues(userId);
 
+    // impede usuário em múltiplas salas
+    const existingRoom = this.getUserRoom(userId);
+
+    if (existingRoom) {
+      return {
+        matched: true,
+        roomId: existingRoom.id,
+        category: existingRoom.category,
+        partnerId:
+          existingRoom.user1Id === userId
+            ? existingRoom.user2Id
+            : existingRoom.user1Id,
+
+        partnerSocketId:
+          existingRoom.user1Id === userId
+            ? existingRoom.user2SocketId
+            : existingRoom.user1SocketId,
+      };
+    }
+
     const queue = waitingQueues[category];
+
     if (!queue) {
       throw new Error('Invalid category');
     }
 
-    if (queue.length > 0) {
+    // impede duplicação na fila
+    const alreadyQueued = queue.find(
+      item => item.userId === userId
+    );
+
+    if (alreadyQueued) {
+      return {
+        matched: false,
+        category,
+        queuePosition:
+          queue.findIndex(
+            q => q.userId === userId
+          ) + 1,
+
+        estimatedWait:
+          this.calculateEstimatedWait(
+            queue.length
+          ),
+      };
+    }
+
+    // tenta achar parceiro válido
+    while (queue.length > 0) {
+
       const partner = queue.shift();
+
+      // ignora inválidos
+      if (
+        !partner ||
+        partner.userId === userId
+      ) {
+        continue;
+      }
+
       const roomId = uuidv4();
+
       const room = {
         id: roomId,
+
         category,
+
         user1Id: partner.userId,
         user2Id: userId,
+
         user1SocketId: partner.socketId,
         user2SocketId: socketId,
+
         status: 'active',
-        createdAt: new Date()
+
+        createdAt: new Date(),
+
+        // importante para cleanup
+        lastActivity: new Date(),
       };
 
       activeRooms.set(roomId, room);
+
+      console.log(
+        '[MATCHING] Room created:',
+        roomId
+      );
 
       return {
         matched: true,
         roomId,
         category,
         partnerId: partner.userId,
-        partnerSocketId: partner.socketId
+        partnerSocketId: partner.socketId,
       };
     }
 
+    // adiciona na fila
     queue.push({
       userId,
       socketId,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     });
+
+    console.log(
+      '[MATCHING] Added to queue:',
+      userId,
+      category
+    );
 
     return {
       matched: false,
       category,
       queuePosition: queue.length,
-      estimatedWait: this.calculateEstimatedWait(queue.length)
+      estimatedWait:
+        this.calculateEstimatedWait(
+          queue.length
+        ),
     };
   }
 
   leaveQueue(userId, category = null) {
-    if (category) {
-      const queue = waitingQueues[category];
-      if (!queue) return false;
 
-      const index = queue.findIndex(item => item.userId === userId);
-      if (index === -1) return false;
+    if (category) {
+
+      const queue = waitingQueues[category];
+
+      if (!queue) {
+        return false;
+      }
+
+      const index = queue.findIndex(
+        item => item.userId === userId
+      );
+
+      if (index === -1) {
+        return false;
+      }
 
       queue.splice(index, 1);
+
       return true;
     }
 
     this.leaveAllQueues(userId);
+
     return true;
   }
 
   leaveAllQueues(userId) {
-    Object.keys(waitingQueues).forEach(category => {
-      const queue = waitingQueues[category];
-      const index = queue.findIndex(item => item.userId === userId);
-      if (index > -1) {
-        queue.splice(index, 1);
+
+    Object.keys(waitingQueues).forEach(
+      category => {
+
+        const queue =
+          waitingQueues[category];
+
+        const index = queue.findIndex(
+          item => item.userId === userId
+        );
+
+        if (index > -1) {
+          queue.splice(index, 1);
+        }
       }
-    });
+    );
   }
 
   getRoom(roomId) {
@@ -88,56 +189,115 @@ class MatchingService {
   }
 
   getUserRoom(userId) {
-    return Array.from(activeRooms.values()).find(
-      room => room.user1Id === userId || room.user2Id === userId
+
+    return Array.from(
+      activeRooms.values()
+    ).find(
+      room =>
+        room.user1Id === userId ||
+        room.user2Id === userId
     );
   }
 
   getUserRooms(userId) {
-    return Array.from(activeRooms.values()).filter(
-      room => room.user1Id === userId || room.user2Id === userId
+
+    return Array.from(
+      activeRooms.values()
+    ).filter(
+      room =>
+        room.user1Id === userId ||
+        room.user2Id === userId
     );
   }
 
   leaveRoom(roomId, userId) {
-    const room = activeRooms.get(roomId);
-    if (!room) return null;
+
+    const room =
+      activeRooms.get(roomId);
+
+    if (!room) {
+      return null;
+    }
 
     activeRooms.delete(roomId);
 
-    const partnerId = room.user1Id === userId ? room.user2Id : room.user1Id;
-    const partnerSocketId = room.user1Id === userId ? room.user2SocketId : room.user1SocketId;
+    const partnerId =
+      room.user1Id === userId
+        ? room.user2Id
+        : room.user1Id;
+
+    const partnerSocketId =
+      room.user1Id === userId
+        ? room.user2SocketId
+        : room.user1SocketId;
 
     return {
       ...room,
+
       partnerId,
+
       partnerSocketId,
+
       status: 'ended',
-      endedAt: new Date()
+
+      endedAt: new Date(),
     };
   }
 
   calculateEstimatedWait(queuePosition) {
-    const estimatedSeconds = queuePosition * 15;
-    return estimatedSeconds < 60 ? `${estimatedSeconds}s` : `${Math.ceil(estimatedSeconds / 60)}m`;
+
+    const estimatedSeconds =
+      queuePosition * 15;
+
+    return estimatedSeconds < 60
+      ? `${estimatedSeconds}s`
+      : `${Math.ceil(
+          estimatedSeconds / 60
+        )}m`;
   }
 
   getQueueStats() {
+
     return {
-      movies: waitingQueues.movies.length,
-      gaming: waitingQueues.gaming.length,
-      music: waitingQueues.music.length,
-      study: waitingQueues.study.length,
-      activeRooms: activeRooms.size
+      movies:
+        waitingQueues.movies.length,
+
+      gaming:
+        waitingQueues.gaming.length,
+
+      music:
+        waitingQueues.music.length,
+
+      study:
+        waitingQueues.study.length,
+
+      activeRooms:
+        activeRooms.size,
     };
   }
 
   cleanupInactiveRooms() {
+
     const now = Date.now();
-    const maxInactiveTime = 5 * 60 * 1000;
+
+    const maxInactiveTime =
+      5 * 60 * 1000;
 
     for (const [roomId, room] of activeRooms.entries()) {
-      if (now - room.createdAt.getTime() > maxInactiveTime) {
+
+      const lastActivity =
+        room.lastActivity || room.createdAt;
+
+      const inactiveTime =
+        now - lastActivity.getTime();
+
+      if (inactiveTime > maxInactiveTime) {
+
+        console.log(
+          '[MATCHING] Removing inactive room:',
+          roomId
+        );
+
         activeRooms.delete(roomId);
       }
     }
@@ -145,4 +305,5 @@ class MatchingService {
 }
 
 module.exports = new MatchingService();
+
 module.exports.CATEGORIES = CATEGORIES;

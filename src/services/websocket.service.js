@@ -1,204 +1,691 @@
 const jwt = require('jsonwebtoken');
+
 const { v4: uuidv4 } = require('uuid');
+
 const matchingService = require('./matching.service');
+
 const authService = require('./auth.service');
 
 class WebSocketService {
-  constructor() {
-    this.io = null;
-    this.connectedUsers = new Map();
-  }
 
-  initialize(io) {
-    this.io = io;
+    constructor() {
 
-    io.on('connection', (socket) => {
-      socket.on('authenticate', async ({ token } = {}) => {
-        try {
-          const decoded = jwt.verify(token, process.env.JWT_SECRET);
-          socket.userId = decoded.userId;
-          this.connectedUsers.set(decoded.userId, socket.id);
-          await authService.setUserOnline(decoded.userId, true);
-          socket.emit('authenticated', { userId: decoded.userId });
-        } catch (error) {
-          socket.emit('auth-error', { error: 'Invalid token' });
-        }
-      });
+        this.io = null;
 
-      socket.on('find-match', async ({ category } = {}) => {
-        if (!socket.userId) {
-          socket.emit('error', { error: 'Not authenticated' });
-          return;
-        }
-
-        if (!matchingService.CATEGORIES.includes(category)) {
-          socket.emit('error', { error: 'Invalid category. Use: movies, gaming, music, study' });
-          return;
-        }
-
-        const result = matchingService.joinQueue(socket.userId, socket.id, category);
-
-        if (result.matched) {
-          const user1 = await authService.getUserById(socket.userId);
-          const user2 = await authService.getUserById(result.partnerId);
-          const partnerSocket = io.sockets.sockets.get(result.partnerSocketId);
-
-          socket.emit('match-found', {
-            roomId: result.roomId,
-            category: result.category,
-            partner: { username: user2 ? user2.username : 'User' }
-          });
-
-          if (partnerSocket) {
-            partnerSocket.emit('match-found', {
-              roomId: result.roomId,
-              category: result.category,
-              partner: { username: user1 ? user1.username : 'User' }
-            });
-          }
-
-          return;
-        }
-
-        socket.emit('queue-status', {
-          category: result.category,
-          position: result.queuePosition,
-          estimatedWait: result.estimatedWait
-        });
-      });
-
-      socket.on('cancel-matching', () => {
-        if (!socket.userId) return;
-        matchingService.leaveAllQueues(socket.userId);
-        socket.emit('matching-cancelled', { success: true });
-      });
-
-      socket.on('join-room', ({ roomId } = {}) => {
-        const room = matchingService.getRoom(roomId);
-        if (!room || (room.user1Id !== socket.userId && room.user2Id !== socket.userId)) {
-          socket.emit('error', { error: 'Access denied to this room' });
-          return;
-        }
-
-        socket.join(roomId);
-        socket.currentRoom = roomId;
-        socket.emit('room-joined', { roomId });
-      });
-
-      socket.on('send-message', async ({ text } = {}) => {
-        if (!socket.currentRoom || !socket.userId || typeof text !== 'string' || !text.trim()) return;
-
-        const sender = await authService.getUserById(socket.userId);
-        socket.to(socket.currentRoom).emit('new-message', {
-          id: uuidv4(),
-          text: text.trim(),
-          senderId: socket.userId,
-          username: sender ? sender.username : 'User',
-          timestamp: new Date()
-        });
-      });
-
-      socket.on('typing-start', () => {
-        if (socket.currentRoom) {
-          socket.to(socket.currentRoom).emit('partner-typing', { isTyping: true });
-        }
-      });
-
-      socket.on('typing-stop', () => {
-        if (socket.currentRoom) {
-          socket.to(socket.currentRoom).emit('partner-typing', { isTyping: false });
-        }
-      });
-
-      socket.on('leave-room', ({ roomId } = {}) => {
-        this.handleLeaveRoom(socket, roomId);
-      });
-
-      socket.on('disconnect', async () => {
-        if (!socket.userId) return;
-
-        await authService.setUserOnline(socket.userId, false);
-        matchingService.leaveAllQueues(socket.userId);
-        this.connectedUsers.delete(socket.userId);
-        this.handleLeaveRoom(socket, socket.currentRoom, true);
-      });
-    });
-
-    setInterval(() => {
-      matchingService.cleanupInactiveRooms();
-    }, 5 * 60 * 1000);
-  }
-
-  handleLeaveRoom(socket, roomId = null, isDisconnect = false) {
-    const targetRoom = roomId || socket.currentRoom;
-    if (!targetRoom) return;
-
-    const roomData = matchingService.leaveRoom(targetRoom, socket.userId);
-
-    if (roomData) {
-      socket.to(targetRoom).emit('partner-left', {
-        roomId: targetRoom,
-        message: isDisconnect ? 'Your partner disconnected' : 'Your partner left the conversation'
-      });
-
-      this.requeuePartner(roomData);
+        this.connectedUsers = new Map();
     }
 
-    socket.leave(targetRoom);
-    socket.currentRoom = null;
-  }
+    initialize(io) {
 
-  requeuePartner(roomData) {
-    if (!roomData.partnerSocketId || !this.io) return;
+        this.io = io;
 
-    const partnerSocket = this.io.sockets.sockets.get(roomData.partnerSocketId);
-    if (!partnerSocket) return;
+        io.on('connection', (socket) => {
 
-    partnerSocket.currentRoom = null;
-    partnerSocket.emit('partner-disconnected', {
-      message: 'Finding a new person...'
-    });
+            console.log(
+                '[WS] New connection:',
+                socket.id
+            );
 
-    setTimeout(async () => {
-      if (!partnerSocket.userId) return;
+            // =========================
+            // AUTHENTICATION
+            // =========================
 
-      const result = matchingService.joinQueue(partnerSocket.userId, partnerSocket.id, roomData.category);
+            socket.on(
+                'authenticate',
+                async ({ token } = {}) => {
 
-      if (result.matched) {
-        const newPartnerSocket = this.io.sockets.sockets.get(result.partnerSocketId);
+                    try {
 
-        partnerSocket.emit('match-found', {
-          roomId: result.roomId,
-          category: result.category,
-          partner: { username: 'User' }
+                        if (!token) {
+
+                            socket.emit(
+                                'auth-error',
+                                {
+                                    error:
+                                        'Token missing',
+                                }
+                            );
+
+                            return;
+                        }
+
+                        const decoded =
+                            jwt.verify(
+                                token,
+                                process.env.JWT_SECRET
+                            );
+
+                        socket.userId =
+                            decoded.userId;
+
+                        this.connectedUsers.set(
+                            decoded.userId,
+                            socket.id
+                        );
+
+                        await authService.setUserOnline(
+                            decoded.userId,
+                            true
+                        );
+
+                        console.log(
+                            '[WS] Authenticated:',
+                            decoded.userId
+                        );
+
+                        socket.emit(
+                            'authenticated',
+                            {
+                                userId:
+                                    decoded.userId,
+                            }
+                        );
+
+                    } catch (error) {
+
+                        console.error(
+                            '[WS] Auth error:',
+                            error
+                        );
+
+                        socket.emit(
+                            'auth-error',
+                            {
+                                error:
+                                    'Invalid token',
+                            }
+                        );
+                    }
+                }
+            );
+
+            // =========================
+            // FIND MATCH
+            // =========================
+
+            socket.on(
+                'find-match',
+                async ({ category } = {}) => {
+
+                    try {
+
+                        console.log(
+                            '[MATCH] Find match:',
+                            socket.userId,
+                            category
+                        );
+
+                        // auth check
+                        if (!socket.userId) {
+
+                            socket.emit(
+                                'error',
+                                {
+                                    error:
+                                        'Not authenticated',
+                                }
+                            );
+
+                            return;
+                        }
+
+                        // category validation
+                        if (
+                            !matchingService.CATEGORIES.includes(
+                                category
+                            )
+                        ) {
+
+                            socket.emit(
+                                'error',
+                                {
+                                    error:
+                                        'Invalid category',
+                                }
+                            );
+
+                            return;
+                        }
+
+                        // impede múltiplos matchs
+                        if (
+                            socket.currentRoom
+                        ) {
+
+                            socket.emit(
+                                'error',
+                                {
+                                    error:
+                                        'Already in room',
+                                }
+                            );
+
+                            return;
+                        }
+
+                        // remove usuário de filas anteriores
+                        matchingService.leaveAllQueues(
+                            socket.userId
+                        );
+
+                        const result =
+                            matchingService.joinQueue(
+                                socket.userId,
+                                socket.id,
+                                category
+                            );
+
+                        // =========================
+                        // MATCH FOUND
+                        // =========================
+
+                        if (
+                            result.matched
+                        ) {
+
+                            console.log(
+                                '[MATCH] Room created:',
+                                result.roomId
+                            );
+
+                            const user1 =
+                                await authService.getUserById(
+                                    socket.userId
+                                );
+
+                            const user2 =
+                                await authService.getUserById(
+                                    result.partnerId
+                                );
+
+                            const partnerSocket =
+                                io.sockets.sockets.get(
+                                    result.partnerSocketId
+                                );
+
+                            // entra AUTOMATICAMENTE na room
+                            socket.join(
+                                result.roomId
+                            );
+
+                            socket.currentRoom =
+                                result.roomId;
+
+                            if (
+                                partnerSocket
+                            ) {
+
+                                partnerSocket.join(
+                                    result.roomId
+                                );
+
+                                partnerSocket.currentRoom =
+                                    result.roomId;
+                            }
+
+                            // emite match
+                            socket.emit(
+                                'match-found',
+                                {
+                                    roomId:
+                                        result.roomId,
+
+                                    category:
+                                        result.category,
+
+                                    partner: {
+                                        username:
+                                            user2
+                                                ?.username ||
+                                            'User',
+                                    },
+                                }
+                            );
+
+                            if (
+                                partnerSocket
+                            ) {
+
+                                partnerSocket.emit(
+                                    'match-found',
+                                    {
+                                        roomId:
+                                            result.roomId,
+
+                                        category:
+                                            result.category,
+
+                                        partner: {
+                                            username:
+                                                user1
+                                                    ?.username ||
+                                                'User',
+                                        },
+                                    }
+                                );
+                            }
+
+                            return;
+                        }
+
+                        // =========================
+                        // WAITING QUEUE
+                        // =========================
+
+                        socket.emit(
+                            'queue-status',
+                            {
+                                category:
+                                    result.category,
+
+                                position:
+                                    result.queuePosition,
+
+                                estimatedWait:
+                                    result.estimatedWait,
+                            }
+                        );
+
+                    } catch (error) {
+
+                        console.error(
+                            '[MATCH] Error:',
+                            error
+                        );
+
+                        socket.emit(
+                            'error',
+                            {
+                                error:
+                                    'Matchmaking failed',
+                            }
+                        );
+                    }
+                }
+            );
+
+            // =========================
+            // CANCEL MATCHING
+            // =========================
+
+            socket.on(
+                'cancel-matching',
+                () => {
+
+                    if (!socket.userId)
+                        return;
+
+                    console.log(
+                        '[MATCH] Cancel matching:',
+                        socket.userId
+                    );
+
+                    matchingService.leaveAllQueues(
+                        socket.userId
+                    );
+
+                    socket.emit(
+                        'matching-cancelled',
+                        {
+                            success: true,
+                        }
+                    );
+                }
+            );
+
+            // =========================
+            // SEND MESSAGE
+            // =========================
+
+            socket.on(
+                'send-message',
+                async (
+                    {
+                        roomId,
+                        text,
+                    } = {}
+                ) => {
+
+                    try {
+
+                        if (
+                            !roomId ||
+                            !text ||
+                            !socket.userId
+                        ) {
+                            return;
+                        }
+
+                        const room =
+                            matchingService.getRoom(
+                                roomId
+                            );
+
+                        if (!room) {
+
+                            socket.emit(
+                                'error',
+                                {
+                                    error:
+                                        'Room not found',
+                                }
+                            );
+
+                            return;
+                        }
+
+                        // atualiza atividade
+                        room.lastActivity =
+                            new Date();
+
+                        const sender =
+                            await authService.getUserById(
+                                socket.userId
+                            );
+
+                        console.log(
+                            '[CHAT] Message:',
+                            text
+                        );
+
+                        this.io
+                            .to(roomId)
+                            .emit(
+                                'new-message',
+                                {
+                                    id:
+                                        uuidv4(),
+
+                                    text:
+                                        text.trim(),
+
+                                    senderId:
+                                        socket.userId,
+
+                                    username:
+                                        sender
+                                            ?.username ||
+                                        'User',
+
+                                    timestamp:
+                                        new Date(),
+                                }
+                            );
+
+                    } catch (error) {
+
+                        console.error(
+                            '[CHAT] Error:',
+                            error
+                        );
+                    }
+                }
+            );
+
+            // =========================
+            // TYPING
+            // =========================
+
+            socket.on(
+                'typing-start',
+                () => {
+
+                    if (
+                        socket.currentRoom
+                    ) {
+
+                        socket
+                            .to(
+                                socket.currentRoom
+                            )
+                            .emit(
+                                'partner-typing',
+                                {
+                                    isTyping:
+                                        true,
+                                }
+                            );
+                    }
+                }
+            );
+
+            socket.on(
+                'typing-stop',
+                () => {
+
+                    if (
+                        socket.currentRoom
+                    ) {
+
+                        socket
+                            .to(
+                                socket.currentRoom
+                            )
+                            .emit(
+                                'partner-typing',
+                                {
+                                    isTyping:
+                                        false,
+                                }
+                            );
+                    }
+                }
+            );
+
+            // =========================
+            // LEAVE ROOM
+            // =========================
+
+            socket.on(
+                'leave-room',
+                ({ roomId } = {}) => {
+
+                    console.log(
+                        '[ROOM] Leave:',
+                        roomId
+                    );
+
+                    this.handleLeaveRoom(
+                        socket,
+                        roomId
+                    );
+                }
+            );
+
+            // =========================
+            // DISCONNECT
+            // =========================
+
+            socket.on(
+                'disconnect',
+                async () => {
+
+                    console.log(
+                        '[WS] Disconnect:',
+                        socket.userId
+                    );
+                    if (
+                        !socket.userId
+                    ) {
+                        return;
+                    }
+                    await authService.setUserOnline(
+                        socket.userId,
+                        false
+                    );
+                    matchingService.leaveAllQueues(
+                        socket.userId
+                    );
+                    this.connectedUsers.delete(
+                        socket.userId
+                    );
+                    this.handleLeaveRoom(
+                        socket,
+                        socket.currentRoom,
+                        true
+                    );
+                }
+            );
         });
-
-        if (newPartnerSocket) {
-          newPartnerSocket.emit('match-found', {
-            roomId: result.roomId,
-            category: result.category,
-            partner: { username: 'User' }
-          });
+        // =========================
+        // CLEANUP
+        // =========================
+        setInterval(() => {
+            matchingService.cleanupInactiveRooms();
+        }, 5 * 60 * 1000);
+    }
+    // =========================
+    // LEAVE ROOM
+    // =========================
+    handleLeaveRoom(
+        socket,
+        roomId = null,
+        isDisconnect = false
+    ) {
+        const targetRoom =
+            roomId ||
+            socket.currentRoom;
+        if (!targetRoom) {
+            return;
         }
-
-        return;
-      }
-
-      partnerSocket.emit('queue-status', {
-        category: result.category,
-        position: result.queuePosition,
-        estimatedWait: result.estimatedWait
-      });
-    }, 1000);
-  }
-
-  getConnectedUsersCount() {
-    return this.connectedUsers.size;
-  }
-
-  isInitialized() {
-    return Boolean(this.io);
-  }
+        const roomData =
+            matchingService.leaveRoom(
+                targetRoom,
+                socket.userId
+            );
+        if (roomData) {
+            socket
+                .to(targetRoom)
+                .emit(
+                    'partner-left',
+                    {
+                        roomId:
+                            targetRoom,
+                        message:
+                            isDisconnect
+                                ? 'Partner disconnected'
+                                : 'Partner left',
+                    }
+                );
+            this.requeuePartner(
+                roomData
+            );
+        }
+        socket.leave(targetRoom);
+        socket.currentRoom = null;
+    }
+    // =========================
+    // REQUEUE PARTNER
+    // =========================
+    async requeuePartner(
+        roomData
+    ) {
+        if (
+            !roomData.partnerSocketId
+        ) {
+            return;
+        }
+        const partnerSocket =
+            this.io.sockets.sockets.get(
+                roomData.partnerSocketId
+            );
+        if (!partnerSocket) {
+            return;
+        }
+        partnerSocket.currentRoom =
+            null;
+        partnerSocket.emit(
+            'partner-disconnected',
+            {
+                message:
+                    'Finding another user...',
+            }
+        );
+        setTimeout(async () => {
+            if (
+                !partnerSocket.userId
+            ) {
+                return;
+            }
+            const result =
+                matchingService.joinQueue(
+                    partnerSocket.userId,
+                    partnerSocket.id,
+                    roomData.category
+                );
+            if (result.matched) {
+                const newPartnerSocket =
+                    this.io.sockets.sockets.get(
+                        result.partnerSocketId
+                    );
+                partnerSocket.join(
+                    result.roomId
+                );
+                partnerSocket.currentRoom =
+                    result.roomId;
+                if (
+                    newPartnerSocket
+                ) {
+                    newPartnerSocket.join(
+                        result.roomId
+                    );
+                    newPartnerSocket.currentRoom =
+                        result.roomId;
+                }
+                partnerSocket.emit(
+                    'match-found',
+                    {
+                        roomId:
+                            result.roomId,
+                        category:
+                            result.category,
+                        partner: {
+                            username:
+                                'User',
+                        },
+                    }
+                );
+                if (
+                    newPartnerSocket
+                ) {
+                    newPartnerSocket.emit(
+                        'match-found',
+                        {
+                            roomId:
+                                result.roomId,
+                            category:
+                                result.category,
+                            partner: {
+                                username:
+                                    'User',
+                            },
+                        }
+                    );
+                }
+                return;
+            }
+            partnerSocket.emit(
+                'queue-status',
+                {
+                    category:
+                        result.category,
+                    position:
+                        result.queuePosition,
+                    estimatedWait:
+                        result.estimatedWait,
+                }
+            );
+        }, 1000);
+    }
+    // =========================
+    // STATS
+    // =========================
+    getConnectedUsersCount() {
+        return this.connectedUsers.size;
+    }
+    isInitialized() {
+        return Boolean(this.io);
+    }
 }
-
-module.exports = new WebSocketService();
+module.exports =
+    new WebSocketService();
