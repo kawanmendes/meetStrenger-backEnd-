@@ -337,6 +337,10 @@ class WebSocketService {
             // SEND MESSAGE
             // =========================
 
+           // =========================
+// SEND MESSAGE
+// =========================
+        
             socket.on(
                 'send-message',
                 async (
@@ -345,9 +349,10 @@ class WebSocketService {
                         text,
                     } = {}
                 ) => {
-
+                
                     try {
-
+                    
+                        // valida payload
                         if (
                             !roomId ||
                             !text ||
@@ -355,14 +360,16 @@ class WebSocketService {
                         ) {
                             return;
                         }
-
+                    
+                        // busca sala
                         const room =
                             matchingService.getRoom(
                                 roomId
                             );
-
+                        
+                        // sala inexistente
                         if (!room) {
-
+                        
                             socket.emit(
                                 'error',
                                 {
@@ -370,24 +377,57 @@ class WebSocketService {
                                         'Room not found',
                                 }
                             );
-
+                        
                             return;
                         }
-
-                        // atualiza atividade
+                    
+                        // =========================
+                        // AUTHORIZATION VALIDATION
+                        // =========================
+                    
+                        const isUserInRoom =
+                    
+                            room.user1Id ===
+                                socket.userId ||
+                    
+                            room.user2Id ===
+                                socket.userId;
+                    
+                        if (!isUserInRoom) {
+                        
+                            console.warn(
+                                '[CHAT] Unauthorized room access:',
+                                socket.userId,
+                                roomId
+                            );
+                        
+                            socket.emit(
+                                'error',
+                                {
+                                    error:
+                                        'Not authorized for this room',
+                                }
+                            );
+                        
+                            return;
+                        }
+                    
+                        // atualiza atividade da sala
                         room.lastActivity =
                             new Date();
-
+                    
+                        // busca remetente
                         const sender =
                             await authService.getUserById(
                                 socket.userId
                             );
-
+                        
                         console.log(
                             '[CHAT] Message:',
                             text
                         );
-
+                    
+                        // envia mensagem
                         this.io
                             .to(roomId)
                             .emit(
@@ -395,33 +435,39 @@ class WebSocketService {
                                 {
                                     id:
                                         uuidv4(),
-
+                                
                                     text:
                                         text.trim(),
-
+                                
                                     senderId:
                                         socket.userId,
-
+                                
                                     username:
-                                        sender
-                                            ?.username ||
+                                        sender?.username ||
                                         'User',
-
+                                
                                     timestamp:
                                         new Date(),
                                 }
                             );
-
+                        
                     } catch (error) {
-
+                    
                         console.error(
                             '[CHAT] Error:',
                             error
                         );
+                    
+                        socket.emit(
+                            'error',
+                            {
+                                error:
+                                    'Failed to send message',
+                            }
+                        );
                     }
                 }
             );
-
             // =========================
             // TYPING
             // =========================
