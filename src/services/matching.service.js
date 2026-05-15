@@ -10,6 +10,9 @@ const waitingQueues = CATEGORIES.reduce((queues, category) => {
 const activeRooms = new Map();
 
 class MatchingService {
+  sameUser(userA, userB) {
+    return String(userA) === String(userB);
+  }
 
   joinQueue(userId, socketId, category) {
 
@@ -25,12 +28,12 @@ class MatchingService {
         roomId: existingRoom.id,
         category: existingRoom.category,
         partnerId:
-          existingRoom.user1Id === userId
+          this.sameUser(existingRoom.user1Id, userId)
             ? existingRoom.user2Id
             : existingRoom.user1Id,
 
         partnerSocketId:
-          existingRoom.user1Id === userId
+          this.sameUser(existingRoom.user1Id, userId)
             ? existingRoom.user2SocketId
             : existingRoom.user1SocketId,
       };
@@ -44,7 +47,7 @@ class MatchingService {
 
     // impede duplicação na fila
     const alreadyQueued = queue.find(
-      item => item.userId === userId
+      item => this.sameUser(item.userId, userId)
     );
 
     if (alreadyQueued) {
@@ -53,7 +56,7 @@ class MatchingService {
         category,
         queuePosition:
           queue.findIndex(
-            q => q.userId === userId
+            q => this.sameUser(q.userId, userId)
           ) + 1,
 
         estimatedWait:
@@ -71,7 +74,8 @@ class MatchingService {
       // ignora inválidos
       if (
         !partner ||
-        partner.userId === userId
+        this.sameUser(partner.userId, userId) ||
+        partner.socketId === socketId
       ) {
         continue;
       }
@@ -148,7 +152,7 @@ class MatchingService {
       }
 
       const index = queue.findIndex(
-        item => item.userId === userId
+        item => this.sameUser(item.userId, userId)
       );
 
       if (index === -1) {
@@ -174,7 +178,7 @@ class MatchingService {
           waitingQueues[category];
 
         const index = queue.findIndex(
-          item => item.userId === userId
+          item => this.sameUser(item.userId, userId)
         );
 
         if (index > -1) {
@@ -194,8 +198,8 @@ class MatchingService {
       activeRooms.values()
     ).find(
       room =>
-        room.user1Id === userId ||
-        room.user2Id === userId
+        this.sameUser(room.user1Id, userId) ||
+        this.sameUser(room.user2Id, userId)
     );
   }
 
@@ -205,8 +209,8 @@ class MatchingService {
       activeRooms.values()
     ).filter(
       room =>
-        room.user1Id === userId ||
-        room.user2Id === userId
+        this.sameUser(room.user1Id, userId) ||
+        this.sameUser(room.user2Id, userId)
     );
   }
 
@@ -222,12 +226,12 @@ class MatchingService {
     activeRooms.delete(roomId);
 
     const partnerId =
-      room.user1Id === userId
+      this.sameUser(room.user1Id, userId)
         ? room.user2Id
         : room.user1Id;
 
     const partnerSocketId =
-      room.user1Id === userId
+      this.sameUser(room.user1Id, userId)
         ? room.user2SocketId
         : room.user1SocketId;
 

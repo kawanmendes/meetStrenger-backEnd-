@@ -203,6 +203,45 @@ class WebSocketService {
                                     result.partnerSocketId
                                 );
 
+                            if (
+                                !partnerSocket ||
+                                !partnerSocket.userId ||
+                                String(partnerSocket.userId) ===
+                                    String(socket.userId)
+                            ) {
+
+                                console.warn(
+                                    '[MATCH] Ignoring stale/self partner:',
+                                    result.partnerId
+                                );
+
+                                matchingService.leaveRoom(
+                                    result.roomId,
+                                    socket.userId
+                                );
+
+                                const retry =
+                                    matchingService.joinQueue(
+                                        socket.userId,
+                                        socket.id,
+                                        category
+                                    );
+
+                                socket.emit(
+                                    'queue-status',
+                                    {
+                                        category:
+                                            retry.category,
+                                        position:
+                                            retry.queuePosition,
+                                        estimatedWait:
+                                            retry.estimatedWait,
+                                    }
+                                );
+
+                                return;
+                            }
+
                             // entra AUTOMATICAMENTE na room
                             socket.join(
                                 result.roomId
@@ -211,17 +250,12 @@ class WebSocketService {
                             socket.currentRoom =
                                 result.roomId;
 
-                            if (
-                                partnerSocket
-                            ) {
+                            partnerSocket.join(
+                                result.roomId
+                            );
 
-                                partnerSocket.join(
-                                    result.roomId
-                                );
-
-                                partnerSocket.currentRoom =
-                                    result.roomId;
-                            }
+                            partnerSocket.currentRoom =
+                                result.roomId;
 
                             // emite match
                             socket.emit(
@@ -242,28 +276,23 @@ class WebSocketService {
                                 }
                             );
 
-                            if (
-                                partnerSocket
-                            ) {
+                            partnerSocket.emit(
+                                'match-found',
+                                {
+                                    roomId:
+                                        result.roomId,
 
-                                partnerSocket.emit(
-                                    'match-found',
-                                    {
-                                        roomId:
-                                            result.roomId,
+                                    category:
+                                        result.category,
 
-                                        category:
-                                            result.category,
-
-                                        partner: {
-                                            username:
-                                                user1
-                                                    ?.username ||
-                                                'User',
-                                        },
-                                    }
-                                );
-                            }
+                                    partner: {
+                                        username:
+                                            user1
+                                                ?.username ||
+                                            'User',
+                                    },
+                                }
+                            );
 
                             return;
                         }
@@ -664,20 +693,56 @@ class WebSocketService {
                     this.io.sockets.sockets.get(
                         result.partnerSocketId
                     );
+
+                if (
+                    !newPartnerSocket ||
+                    !newPartnerSocket.userId ||
+                    String(newPartnerSocket.userId) ===
+                        String(partnerSocket.userId)
+                ) {
+
+                    console.warn(
+                        '[MATCH] Requeue ignored stale/self partner:',
+                        result.partnerId
+                    );
+
+                    matchingService.leaveRoom(
+                        result.roomId,
+                        partnerSocket.userId
+                    );
+
+                    const retry =
+                        matchingService.joinQueue(
+                            partnerSocket.userId,
+                            partnerSocket.id,
+                            roomData.category
+                        );
+
+                    partnerSocket.emit(
+                        'queue-status',
+                        {
+                            category:
+                                retry.category,
+                            position:
+                                retry.queuePosition,
+                            estimatedWait:
+                                retry.estimatedWait,
+                        }
+                    );
+
+                    return;
+                }
+
                 partnerSocket.join(
                     result.roomId
                 );
                 partnerSocket.currentRoom =
                     result.roomId;
-                if (
-                    newPartnerSocket
-                ) {
-                    newPartnerSocket.join(
-                        result.roomId
-                    );
-                    newPartnerSocket.currentRoom =
-                        result.roomId;
-                }
+                newPartnerSocket.join(
+                    result.roomId
+                );
+                newPartnerSocket.currentRoom =
+                    result.roomId;
                 partnerSocket.emit(
                     'match-found',
                     {
@@ -691,23 +756,19 @@ class WebSocketService {
                         },
                     }
                 );
-                if (
-                    newPartnerSocket
-                ) {
-                    newPartnerSocket.emit(
-                        'match-found',
-                        {
-                            roomId:
-                                result.roomId,
-                            category:
-                                result.category,
-                            partner: {
-                                username:
-                                    'User',
-                            },
-                        }
-                    );
-                }
+                newPartnerSocket.emit(
+                    'match-found',
+                    {
+                        roomId:
+                            result.roomId,
+                        category:
+                            result.category,
+                        partner: {
+                            username:
+                                'User',
+                        },
+                    }
+                );
                 return;
             }
             partnerSocket.emit(
